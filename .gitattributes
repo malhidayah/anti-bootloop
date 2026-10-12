@@ -1,0 +1,7 @@
+# Shell scripts & CGI must stay LF (Android /system/bin/sh breaks on CRLF)
+*.sh text eol=lf
+cgi-bin/* text eol=lf
+META-INF/** text eol=lf
+module.prop text eol=lf
+config.sh text eol=lf
+webroot/index.html text eol=lf
