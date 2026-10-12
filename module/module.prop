@@ -1,0 +1,6 @@
+id=0antibootloop
+name=Anti-Bootloop
+version=v1.0
+versionCode=1
+author=oc
+description=Detects bootloop-causing modules, auto-disables them, and reports via F3 Hub WebUI (webroot)

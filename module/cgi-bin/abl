@@ -1,0 +1,104 @@
+#!/system/bin/sh
+# Anti-Bootloop CGI untuk F3 Hub (busybox httpd, token-gated).
+# Query: t=TOKEN&a=ACTION[&v=VALUE]
+#   status -> key=value
+#   log    -> baris log mentah
+#   enable&v=ID -> aktifkan lagi module (hapus flag disable)
+
+printf 'Content-Type: text/plain; charset=utf-8\r\n\r\n'
+export PATH=/system/xbin:/system/bin:/system/sbin:/sbin:/bin
+
+BASE=/data/adb/antibootloop
+PANEL=/data/local/tmp/ctlpanel
+
+# token yang sama dengan hub (akt: cgi-bin/act)
+T=$(grep -m1 '^T=' "$PANEL/cgi-bin/act" 2>/dev/null | cut -d= -f2)
+
+tok=""; a=""; v=""
+old="$IFS"; IFS='&'
+for pair in $QUERY_STRING; do
+  k="${pair%%=*}"; w="${pair#*=}"
+  case "$k" in
+    t) tok="$w" ;;
+    a) a="$w" ;;
+    v) v="$w" ;;
+  esac
+done
+IFS="$old"
+
+# hanya token valid, atau localhost tanpa token (debug)
+if [ -n "$T" ] && [ "$tok" != "$T" ]; then echo "error: unauthorized"; exit 1; fi
+
+safe() { case "$1" in *[!A-Za-z0-9._-]*|"") return 1 ;; *) return 0 ;; esac; }
+
+case "$a" in
+  status)
+    echo "count=$(cat "$BASE/count" 2>/dev/null || echo 0)"
+    echo "boot_ok=$([ -f "$BASE/boot_ok" ] && echo 1 || echo 0)"
+    echo "suspect=$(cat "$BASE/suspect" 2>/dev/null)"
+    if [ -s "$BASE/disabled" ]; then
+      while IFS= read -r l; do
+        [ -z "$l" ] && continue
+        echo "disabled=$l"
+      done < "$BASE/disabled"
+    fi
+    # status tiap module tersangka yang kita catat
+    if [ -s "$BASE/disabled" ]; then
+      cut -d' ' -f1 "$BASE/disabled" | sort -u | while IFS= read -r mid; do
+        [ -z "$mid" ] && continue
+        st=on
+        [ -f "/data/adb/modules/$mid/disable" ] && st=off
+        echo "mod=$mid state=$st"
+      done
+    fi
+    ;;
+  summary)
+    # boot_state: normal = boot terakhir sukses; problem = boot sebelumnya tidak selesai
+    if [ -f "$BASE/boot_ok" ]; then echo "boot_state=normal"; else echo "boot_state=problem"; fi
+    echo "count=$(cat "$BASE/count" 2>/dev/null || echo 0)"
+    echo "threshold=${THRESHOLD:-2}"
+    echo "suspect=$(cat "$BASE/suspect" 2>/dev/null)"
+    ;;
+  modules)
+    # status warna per module: green/yellow/red/gray
+    #   green  = aktif & tidak berubah sejak boot sukses terakhir
+    #   yellow = aktif tapi baru/diubah (belum terverifikasi boot)
+    #   red    = pernah menyebabkan bootloop (offender)
+    #   gray   = nonaktif (disable/remove)
+    SNAP=$BASE/snapshot
+    OFF=$BASE/offenders
+    for d in /data/adb/modules/*/; do
+      id=${d%/}; id=${id##*/}
+      [ -f "$d/module.prop" ] || continue
+      nm=$(grep -m1 '^name=' "$d/module.prop" 2>/dev/null | cut -d= -f2)
+      [ -n "$nm" ] || nm=$id
+      if [ -f "$d/remove" ]; then
+        state=gray
+      elif [ -f "$d/disable" ]; then
+        if grep -qx "$id" "$OFF" 2>/dev/null; then state=red; else state=gray; fi
+      elif grep -qx "$id" "$OFF" 2>/dev/null; then
+        state=red
+      else
+        mt=$(stat -c %Y "$d/module.prop" 2>/dev/null || echo 0)
+        saved=$(awk -v k="$id" '$1==k{print $2}' "$SNAP" 2>/dev/null)
+        if [ -z "$saved" ] || [ "$mt" -gt "$saved" ]; then state=yellow; else state=green; fi
+      fi
+      echo "mod=$id|$state|$nm"
+    done
+    ;;
+  log)
+    tail -n 80 "$BASE/log.txt" 2>/dev/null
+    ;;
+  enable)
+    if ! safe "$v"; then echo "error: bad id"; exit 1; fi
+    if [ -f "/data/adb/modules/$v/disable" ]; then
+      rm -f "/data/adb/modules/$v/disable"
+      echo "re-enabled: $v"
+    else
+      echo "not disabled: $v"
+    fi
+    ;;
+  *)
+    echo "error: unknown action"
+    ;;
+esac
